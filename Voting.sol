@@ -4,32 +4,34 @@ pragma solidity 0.8.18;
 
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/utils/Strings.sol";
-
-struct Voter {
-    bool isRegistered;
-    bool hasVoted;
-    uint votedProposalId;
-}
-
-struct Proposal {
-    string description;
-    uint voteCount;
-}
-
-enum WorkflowStatus {
-    RegisteringVoters,
-    ProposalsRegistrationStarted,
-    ProposalsRegistrationEnded,
-    VotingSessionStarted,
-    VotingSessionEnded,
-    VotesTallied
-}
+import "hardhat/console.sol";
 
 contract Voting is Ownable {
+
+    struct Voter {
+        bool isRegistered;
+        bool hasVoted;
+        uint votedProposalId;
+    }
+
+    struct Proposal {
+        string description;
+        uint voteCount;
+    }
+
+    enum WorkflowStatus {
+        RegisteringVoters,
+        ProposalsRegistrationStarted,
+        ProposalsRegistrationEnded,
+        VotingSessionStarted,
+        VotingSessionEnded,
+        VotesTallied
+    }
 
     mapping(address => Voter) private voters;
     Proposal[] private proposals;
     WorkflowStatus private status = WorkflowStatus.RegisteringVoters;
+    uint private winningProposalId;
 
     event VoterRegistered(address voterAddress); 
     event WorkflowStatusChange(WorkflowStatus previousStatus, WorkflowStatus newStatus);
@@ -46,14 +48,18 @@ contract Voting is Ownable {
         _;
     }
 
-    function changeStatus(WorkflowStatus _newStatus) public onlyOwner() {
-        int difference = int(uint(_newStatus)) - int(uint(status));
-        require(difference == 1, "Change to this status is not allowed from current status");
-
+    function incrementStatus() public onlyOwner() {
+        require(status != WorkflowStatus.VotesTallied, "Status cannot be incremented because vote is tallied");
         WorkflowStatus _oldStatus = status;
-        status = _newStatus;
-        emit WorkflowStatusChange(_oldStatus, _newStatus);
+        status = Voting.WorkflowStatus(uint(status) + 1);
+
+        if (status == WorkflowStatus.VotesTallied) {
+            declareWinner();
+        }
+
+        emit WorkflowStatusChange(_oldStatus, status);
     }
+
 
     function registerVoter(address _address) public onlyOwner() onlyStatus(WorkflowStatus.RegisteringVoters) {
         require(!voters[_address].isRegistered, "Voter is already registered");
@@ -62,7 +68,7 @@ contract Voting is Ownable {
         emit VoterRegistered(_address);
     }
 
-    function registerProposal(string memory _description) public onlyVoter() onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) {
+    function registerProposal(string memory _description) public onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) onlyVoter() {
         for (uint i = 0; i < proposals.length; i++) {
             require(!Strings.equal(_description, proposals[i].description), "Proposal is already registred");
         }
@@ -79,7 +85,7 @@ contract Voting is Ownable {
         return proposals;
     }
 
-    function vote(uint proposalId) public onlyVoter() onlyStatus(WorkflowStatus.VotingSessionStarted) {
+    function vote(uint proposalId) public onlyStatus(WorkflowStatus.VotingSessionStarted) onlyVoter() {
         require(proposalId < proposals.length, "Proposal does not exist");
         require(!voters[_msgSender()].hasVoted, "User has already voted");
 
@@ -97,16 +103,40 @@ contract Voting is Ownable {
         return proposals[voters[_address].votedProposalId];
     }
 
+    function declareWinner() private onlyOwner onlyStatus(WorkflowStatus.VotesTallied) {
+        if (proposals.length > 0) {
+            uint winnerVoteCount = 0;
+            uint nbWinners = 0;
+            for (uint proposalIndex = 0; proposalIndex < proposals.length; proposalIndex++) {
+                if (proposals[proposalIndex].voteCount > winnerVoteCount) {
+                    winnerVoteCount = proposals[proposalIndex].voteCount;
+                    nbWinners = 1;
+                } else if (proposals[proposalIndex].voteCount == winnerVoteCount) {
+                    nbWinners++;
+                }
+            }
+
+            uint[] memory winnerIndexes = new uint[](nbWinners);
+            uint index = 0;
+            for (uint proposalIndex = 0; proposalIndex < proposals.length; proposalIndex++) {
+                if (proposals[proposalIndex].voteCount == winnerVoteCount) {
+                    winnerIndexes[index] = proposalIndex;
+                    index++;
+                }
+            }
+
+            if (nbWinners == 1) {
+                winningProposalId = winnerIndexes[0];
+            } else {
+                winningProposalId = winnerIndexes[uint(keccak256(abi.encodePacked(block.timestamp, msg.sender, winnerIndexes))) % nbWinners];
+            }
+
+        }
+    }
+
     function getWinner() public view onlyStatus(WorkflowStatus.VotesTallied) returns(Proposal memory) {
         require(proposals.length > 0, "There is no winner because there is no proposal");
 
-        uint winnerId = 0;
-        for (uint i = 1; i < proposals.length; i++) {
-            if (proposals[i].voteCount > proposals[winnerId].voteCount) {
-                winnerId = i;
-            }
-        }
-
-        return proposals[winnerId];
+        return proposals[winningProposalId];
     }
 }
