@@ -4,9 +4,22 @@ pragma solidity 0.8.18;
 
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/utils/Strings.sol";
-import "hardhat/console.sol";
 
 contract Voting is Ownable {
+
+    WorkflowStatus public status = WorkflowStatus.RegisteringVoters; //Everyone can check the status
+    mapping(address => Voter) private voters;
+    Proposal[] private proposals;
+    uint private winningProposalId;
+
+    enum WorkflowStatus {
+        RegisteringVoters,
+        ProposalsRegistrationStarted,
+        ProposalsRegistrationEnded,
+        VotingSessionStarted,
+        VotingSessionEnded,
+        VotesTallied
+    }
 
     struct Voter {
         bool isRegistered;
@@ -18,20 +31,6 @@ contract Voting is Ownable {
         string description;
         uint voteCount;
     }
-
-    enum WorkflowStatus {
-        RegisteringVoters,
-        ProposalsRegistrationStarted,
-        ProposalsRegistrationEnded,
-        VotingSessionStarted,
-        VotingSessionEnded,
-        VotesTallied
-    }
-
-    mapping(address => Voter) private voters;
-    Proposal[] private proposals;
-    WorkflowStatus private status = WorkflowStatus.RegisteringVoters;
-    uint private winningProposalId;
 
     event VoterRegistered(address voterAddress); 
     event WorkflowStatusChange(WorkflowStatus previousStatus, WorkflowStatus newStatus);
@@ -48,27 +47,28 @@ contract Voting is Ownable {
         _;
     }
 
-    function incrementStatus() public onlyOwner() {
+    function incrementStatus() external onlyOwner() {
         require(status != WorkflowStatus.VotesTallied, "Status cannot be incremented because vote is tallied");
+
         WorkflowStatus _oldStatus = status;
         status = Voting.WorkflowStatus(uint(status) + 1);
 
         if (status == WorkflowStatus.VotesTallied) {
-            declareWinner();
+            _declareWinner();
         }
 
         emit WorkflowStatusChange(_oldStatus, status);
     }
 
 
-    function registerVoter(address _address) public onlyOwner() onlyStatus(WorkflowStatus.RegisteringVoters) {
+    function registerVoter(address _address) external onlyOwner() onlyStatus(WorkflowStatus.RegisteringVoters) {
         require(!voters[_address].isRegistered, "Voter is already registered");
 
         voters[_address] = Voter(true, false, 0);
         emit VoterRegistered(_address);
     }
 
-    function registerProposal(string memory _description) public onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) onlyVoter() {
+    function registerProposal(string memory _description) external onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) onlyVoter() {
         for (uint i = 0; i < proposals.length; i++) {
             require(!Strings.equal(_description, proposals[i].description), "Proposal is already registred");
         }
@@ -79,52 +79,61 @@ contract Voting is Ownable {
         emit ProposalRegistered(index);
     }
 
-    function getProposals() public view returns(Proposal[] memory) {
+    function getProposals() external view returns(string[] memory) {
         require(uint(status) >= uint(WorkflowStatus.ProposalsRegistrationStarted), "Proposal registration has not been started");
 
-        return proposals;
+        string[] memory props = new string[](proposals.length);
+        for(uint i = 0; i < proposals.length; i++) {
+            props[i] = proposals[i].description;
+        }
+
+        return props;
     }
 
-    function vote(uint proposalId) public onlyStatus(WorkflowStatus.VotingSessionStarted) onlyVoter() {
-        require(proposalId < proposals.length, "Proposal does not exist");
+    function vote(uint _proposalId) external onlyStatus(WorkflowStatus.VotingSessionStarted) onlyVoter() {
+        require(_proposalId < proposals.length, "Proposal does not exist");
         require(!voters[_msgSender()].hasVoted, "User has already voted");
 
-        proposals[proposalId].voteCount++;
+        proposals[_proposalId].voteCount++;
         voters[_msgSender()].hasVoted = true;
-        voters[_msgSender()].votedProposalId = proposalId;
+        voters[_msgSender()].votedProposalId = _proposalId;
 
-        emit Voted(_msgSender(), proposalId);
+        emit Voted(_msgSender(), _proposalId);
     }
 
-    function checkVote(address _address) public view onlyVoter() returns(Proposal memory) {
+    function checkVote(address _address) external view onlyVoter() returns(Proposal memory) {
         require(uint(status) >= uint(WorkflowStatus.VotingSessionStarted), "Vote has not started yet");
         require(voters[_address].hasVoted, "Voter has not voted yet");
 
         return proposals[voters[_address].votedProposalId];
     }
 
-    function declareWinner() private onlyOwner onlyStatus(WorkflowStatus.VotesTallied) {
+    function _declareWinner() private onlyOwner onlyStatus(WorkflowStatus.VotesTallied) {
         if (proposals.length > 0) {
+
+            //Get number of proposal with highest vote count
             uint winnerVoteCount = 0;
             uint nbWinners = 0;
-            for (uint proposalIndex = 0; proposalIndex < proposals.length; proposalIndex++) {
-                if (proposals[proposalIndex].voteCount > winnerVoteCount) {
-                    winnerVoteCount = proposals[proposalIndex].voteCount;
+            for (uint i = 0; i < proposals.length; i++) {
+                if (proposals[i].voteCount > winnerVoteCount) {
+                    winnerVoteCount = proposals[i].voteCount;
                     nbWinners = 1;
-                } else if (proposals[proposalIndex].voteCount == winnerVoteCount) {
+                } else if (proposals[i].voteCount == winnerVoteCount) {
                     nbWinners++;
                 }
             }
 
+            // Get proposals with highest vote count
             uint[] memory winnerIndexes = new uint[](nbWinners);
             uint index = 0;
-            for (uint proposalIndex = 0; proposalIndex < proposals.length; proposalIndex++) {
-                if (proposals[proposalIndex].voteCount == winnerVoteCount) {
-                    winnerIndexes[index] = proposalIndex;
+            for (uint i = 0; i < proposals.length; i++) {
+                if (proposals[i].voteCount == winnerVoteCount) {
+                    winnerIndexes[index] = i;
                     index++;
                 }
             }
 
+            // Random winner if necessary
             if (nbWinners == 1) {
                 winningProposalId = winnerIndexes[0];
             } else {
@@ -134,9 +143,9 @@ contract Voting is Ownable {
         }
     }
 
-    function getWinner() public view onlyStatus(WorkflowStatus.VotesTallied) returns(Proposal memory) {
+    function getWinner() external view onlyStatus(WorkflowStatus.VotesTallied) returns(string memory) {
         require(proposals.length > 0, "There is no winner because there is no proposal");
 
-        return proposals[winningProposalId];
+        return proposals[winningProposalId].description;
     }
 }
