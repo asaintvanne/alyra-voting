@@ -91,7 +91,7 @@ contract Voting is Ownable {
         emit VoterRegistered(_address);
     }
 
-    function registerProposal(string memory _description) external onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) onlyVoter() {
+    function registerProposal(string calldata _description) external onlyVoter() onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) {
         require(!Strings.equal(_description, ""), "Proposal cannot be empty");
         for (uint i = 0; i < proposals.length; i++) {
             require(!Strings.equal(_description, proposals[i].description), "Proposal is already registred");
@@ -123,17 +123,17 @@ contract Voting is Ownable {
         emit Voted(_msgSender(), _proposalId);
     }
 
-    function checkVote(address _address) external view onlyVoter() onlyStatusAtLess(WorkflowStatus.VotingSessionStarted) returns(Proposal memory) {
-        require(voters[_address].hasVoted, "Voter has not voted yet");
+    function checkVote(address _address) external view onlyVoter() onlyStatusAtLess(WorkflowStatus.VotingSessionStarted) returns(string memory) {
+        require(voters[_address].hasVoted, "Voter has not voted");
 
-        return proposals[voters[_address].votedProposalId];
+        return proposals[voters[_address].votedProposalId].description;
     }
 
     /**
      * Retrieve the winning proposal Id. If many proposals receives the same number of votes,
      * winning proposal is randomly declared.
      * If there is no proposal, winningProposalId stays at 0
-     * Be careful that function remains called once over the life of the contract bacause random
+     * Be careful that function remains called once over the life of the contract because random
      * choice may change between runs
      */
     function _declareWinner() private onlyOwner() onlyStatus(WorkflowStatus.VotesTallied) {
@@ -175,7 +175,7 @@ contract Voting is Ownable {
      * Retrieve the winner from winningProposalId
      * If there is no proposal, winningProposalId stayed at 0 but proposal 0 is not winner
      */
-    function getWinner() external view onlyStatus(WorkflowStatus.VotesTallied) returns(string memory) {
+    function getWinner() external view onlyStatusAtLess(WorkflowStatus.VotesTallied) returns(string memory) {
         require(proposals.length > 0, "There is no winner because there is no proposal");
 
         return proposals[winningProposalId].description;
