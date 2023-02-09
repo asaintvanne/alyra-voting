@@ -2,6 +2,7 @@
 
 pragma solidity 0.8.18;
 
+import "./ERC20Token.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/utils/Strings.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/contracts/utils/math/Math.sol";
@@ -13,12 +14,15 @@ contract InvestmentVoting is Ownable {
 
     WorkflowStatus public status = WorkflowStatus.RegisteringVoters; //Everyone can check the status
     mapping(address => Voter) private voters;
-    address[] private contributors;
     Proposal[] private proposals;
     uint private winningProposalId;
 
+    address[] private contributors;
+    TokenParams private tokenParams;
+    ERC20Token private token;
+
     /**
-     * Status declared in workflow order 
+     * Status declared in workflow order
      */
     enum WorkflowStatus {
         RegisteringVoters,
@@ -46,6 +50,11 @@ contract InvestmentVoting is Ownable {
         uint contributed;
     }
 
+    struct TokenParams {
+        string name;
+        string symbol;
+    }
+
     event VoterRegistered(address voterAddress); 
     event WorkflowStatusChange(WorkflowStatus previousStatus, WorkflowStatus newStatus);
     event ProposalRegistered(uint proposalId);
@@ -53,7 +62,7 @@ contract InvestmentVoting is Ownable {
     event Contributed(address, uint amount);
 
     constructor() payable {
-        //TODO: prendre un ether au owner pour les frais
+        require(msg.value == 1 ether, "Contract must be deployed with 1 ether");
     }
 
     /**
@@ -108,6 +117,7 @@ contract InvestmentVoting is Ownable {
 
     function registerProposal(string memory _description, uint _amount) external onlyStatus(WorkflowStatus.ProposalsRegistrationStarted) onlyVoter() {
         require(!Strings.equal(_description, ""), "Proposal cannot be empty");
+        require(_amount > 0, "Proposal cannot be empty");
         for (uint i = 0; i < proposals.length; i++) {
             require(!Strings.equal(_description, proposals[i].description), "Proposal is already registred");
         }
@@ -127,7 +137,7 @@ contract InvestmentVoting is Ownable {
         return props;
     }
 
-    function vote(uint _proposalId) external payable onlyVoter() onlyStatus(WorkflowStatus.VotingSessionStarted) {
+    function vote(uint _proposalId) external onlyVoter() onlyStatus(WorkflowStatus.VotingSessionStarted) {
         require(_proposalId < proposals.length, "Proposal does not exist");
         require(!voters[_msgSender()].hasVoted, "User has already voted");
 
@@ -135,10 +145,14 @@ contract InvestmentVoting is Ownable {
         voters[_msgSender()].hasVoted = true;
         voters[_msgSender()].votedProposalId = _proposalId;
 
-
         emit Voted(_msgSender(), _proposalId);
     }
 
+    /**
+     * Voters can contribute to invest in proposal
+     * If contributor reaches proposal amount, surplus is refund
+     * If amount is reached, any can contribute again
+     */
     function contribute() external payable onlyVoter() onlyStatus(WorkflowStatus.CollectingStarted) {
         require(proposals.length > 0, "Contribution is not allowed because there is no winning proposal");
         require(msg.value > 0 wei, "Contribution should not be equal to 0");
@@ -148,17 +162,17 @@ contract InvestmentVoting is Ownable {
         voters[_msgSender()].contribution += realContribution;
         proposals[winningProposalId].contributed += realContribution;
         contributors.push(_msgSender());
-        _sendMoney(_msgSender(), msg.value - realContribution);
+        _sendMoneyTo(_msgSender(), msg.value - realContribution, true);
 
         if (realContribution > 0) {
             emit Contributed(_msgSender(), realContribution);
         }
     }
 
-    function checkVote(address _address) external view onlyVoter() onlyStatusAtLess(WorkflowStatus.VotingSessionStarted) returns(Proposal memory) {
-        require(voters[_address].hasVoted, "Voter has not voted yet");
+    function checkVote(address _address) external view onlyVoter() onlyStatusAtLess(WorkflowStatus.VotingSessionStarted) returns(string memory) {
+        require(voters[_address].hasVoted, "Voter has not voted");
 
-        return proposals[voters[_address].votedProposalId];
+        return proposals[voters[_address].votedProposalId].description;
     }
 
     /**
@@ -207,7 +221,7 @@ contract InvestmentVoting is Ownable {
      * Retrieve the winner from winningProposalId
      * If there is no proposal, winningProposalId stayed at 0 but proposal 0 is not winner
      */
-    function getWinner() external view onlyStatus(WorkflowStatus.VotesTallied) returns(string memory) {
+    function getWinner() external view onlyStatusAtLess(WorkflowStatus.VotesTallied) returns(string memory) {
         require(proposals.length > 0, "There is no winner because there is no proposal");
 
         return proposals[winningProposalId].description;
@@ -216,24 +230,38 @@ contract InvestmentVoting is Ownable {
     function _close() private onlyOwner() onlyStatus(WorkflowStatus.Closed) {
         if (proposals.length > 0) {
             if (proposals[winningProposalId].contributed == proposals[winningProposalId].amount) {
-                //TODO: Créer et répartir les erc20
+                require(!Strings.equal(tokenParams.name, ""), "Token params are not set");
+                //Give one 1 token for 1 wei to contributors
+                token = new ERC20Token(tokenParams.name, tokenParams.symbol);
+                for (uint i = 0; i < contributors.length; i++) {
+                    token.mint(contributors[i], voters[contributors[i]].contribution);
+                }
             } else {
                 assert(address(this).balance >= proposals[winningProposalId].contributed);
+                //Refund contributors if proposal amount is not reached
                 for (uint i = 0; i < contributors.length; i++) {
-                    _sendMoney(contributors[i], voters[contributors[i]].contribution);
+                    _sendMoneyTo(contributors[i], voters[contributors[i]].contribution, false);
                 }
                 
             }            
         }
-        _sendMoney(_msgSender(), address(this).balance);
+
+        //Refund owner with unused money
+        _sendMoneyTo(_msgSender(), address(this).balance, false);
     }
 
-    function _sendMoney(address _address, uint _amount) private
-    {
+    function setTokenParams(string calldata _name, string calldata _symbol) external onlyOwner() onlyStatus(WorkflowStatus.CollectingEnded) {
+        require(!Strings.equal(_name, ""), "Token name cannot be empty");
+        require(!Strings.equal(_symbol, ""), "Token symbol cannot be empty");
 
+        tokenParams = TokenParams(_name, _symbol);
     }
 
-    receive() external payable {
-
+    function _sendMoneyTo(address _address, uint _amount, bool checkBalance) private {
+        if (checkBalance) {
+            assert(address(this).balance >= _amount);
+        }
+        (bool success, )= _address.call{value: _amount}("");
+        require(success, "Transfert failed");
     }
 }
