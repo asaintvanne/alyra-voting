@@ -175,7 +175,7 @@ contract Voting is Ownable {
      * Retrieve the winner from winningProposalId
      * If there is no proposal, winningProposalId stayed at 0 but proposal 0 is not winner
      */
-    function getWinner() external view onlyStatusAtLess(WorkflowStatus.VotesTallied) returns(string memory) {
+    function getWinner() external view onlyStatus(WorkflowStatus.VotesTallied) returns(string memory) {
         require(proposals.length > 0, "There is no winner because there is no proposal");
 
         return proposals[winningProposalId].description;
